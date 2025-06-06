@@ -67,6 +67,7 @@ std::tuple<Time, Time, Time, Time, Time, Time> benchConfig(
     unsigned currentPE,
     unsigned numPEs,
     cudaStream_t stream,
+    size_t &outHiddenScale,
     Args &&...args
 ) {
   // Generate test data.
@@ -97,6 +98,7 @@ std::tuple<Time, Time, Time, Time, Time, Time> benchConfig(
 
   const size_t hiddenDimBytes = data.hiddenDim * sizeof(T);
   const size_t hiddenDimScaleBytes = HAS_SCALE ? data.hiddenDimScale * sizeof(float) : 0;
+  outHiddenScale = HAS_SCALE ? data.hiddenDimScale : 0;
 
   Kernel allToAll(
       config.numTokens,
@@ -256,9 +258,10 @@ void benchmark(
     Args &&...args
 ) {
   for (const auto &config : configs) {
+    size_t hiddenScale = 0;
     auto [dispatch, dispatchSend, dispatchRecv, combine, combineSend, combineRecv] =
         benchConfig<Kernel, T, U, HAS_SCALE>(
-            config, repeat, currentPE, numPEs, stream, std::forward<Args>(args)...
+            config, repeat, currentPE, numPEs, stream, hiddenScale, std::forward<Args>(args)...
         );
 
     if (currentPE == 0) {
@@ -276,6 +279,7 @@ void benchmark(
 
       std::cout << std::setw(3) << config.numTokens << " " << std::setw(3) << config.numExperts
                 << " " << std::setw(3) << config.expertsPerToken << " " << std::setw(4) << d
+                << hiddenScale << // Study the internals
                 << " | " << dispatch << " " << dispatchSend << " " << dispatchRecv << " "
                 << std::setw(4) << (unsigned)dispatchBW << "GB/s"
                 << " | " << combine << " " << combineSend << " " << combineRecv << " "
