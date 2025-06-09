@@ -326,6 +326,11 @@ int main(int argc, char **argv) {
 
   std::shared_ptr<Distributed> distributed = std::make_shared<DistributedNVSHMEM>(rank, worldSize);
 
+#if !FORCE_ZCOPY
+  // Disabled for now as this hack doesn't support scaling
+  // And focuses on inter-node scenario
+  // TODO: Update to support everything
+
   if (currentPE == 0) {
     std::cout << "Intra-Node FP8" << std::endl;
   }
@@ -346,6 +351,8 @@ int main(int argc, char **argv) {
   benchmark<AllToAllIntraNode, nv_bfloat16, nv_bfloat16, false>(
       configs, 10, currentPE, numPEs, stream, distributed
   );
+
+#endif
 
   if (currentPE == 0) {
     std::cout << "Inter-Node BF16" << std::endl;

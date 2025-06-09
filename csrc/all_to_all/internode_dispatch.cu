@@ -123,7 +123,14 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
         }
         // If the token is assigned to this block, handle it.
         if (i % (gridDim.x * dpSize) == (blockIdx.x * dpSize + dpRank)) {
-          // Copy the token to the symmetric buffer.
+
+#if FORCE_ZCOPY 
+          // Only send token content
+          const unsigned out_size = dpXStrideElem;
+#if 0
+          std::byte *xInPtr = (std::byte *)(dpX + i * dpXStrideElem);
+#else
+          // Still Copy the token to the symmetric buffer.
           std::byte *xInPtr = xBufferIn + i * tokenStride;
           const int4 *srcX = (int4 *)(dpX + i * dpXStrideElem);
           for (unsigned d = threadIdx.x; d * sizeof(int4) < hiddenDim; d += numGroupThreads) {
@@ -135,11 +142,23 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
           for (unsigned d = threadIdx.x; d * sizeof(float) < hiddenDimScale; d += numGroupThreads) {
             ((float *)xInScalePtr)[d] = srcXScale[d * dpXScaleStrideElem];
           }
+#endif
 
-          if (threadIdx.x == 0) {
-            *((uint32_t *)(xInPtr + tokenDim)) = i;
+#else
+          // Copy the token to the symmetric buffer.
+          const unsigned out_size = tokenStride;
+          std::byte *xInPtr = xBufferIn + i * tokenStride;
+          const int4 *srcX = (int4 *)(dpX + i * dpXStrideElem);
+          for (unsigned d = threadIdx.x; d * sizeof(int4) < hiddenDim; d += numGroupThreads) {
+            ((int4 *)xInPtr)[d] = srcX[d];
           }
 
+          std::byte *xInScalePtr = xInPtr + hiddenDim;
+          const float *srcXScale = dpXScale + i * dpXScaleStrideRow;
+          for (unsigned d = threadIdx.x; d * sizeof(float) < hiddenDimScale; d += numGroupThreads) {
+            ((float *)xInScalePtr)[d] = srcXScale[d * dpXScaleStrideElem];
+          }
+#endif
           // Synchronize the warps within this warp group.
           asm volatile("bar.sync 1, %0;" ::"r"(numGroupThreads));
 
@@ -157,7 +176,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
             nvshmemx_putmem_signal_nbi_warp(
                 destPointer,
                 xInPtr,
-                tokenStride,
+                out_size,
                 &numRecvBuffer[group],
                 1,
                 NVSHMEM_SIGNAL_ADD,
@@ -212,7 +231,9 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
       for (unsigned i = threadIdx.x; i < numTokens; i += blockDim.x) {
         std::byte *xTokenBuffer = xBufferOut + (group * maxNumTokens + i) * tokenStride;
         uint32_t token = tokenStart + i;
+#if !FORCE_ZCOPY
         sourceIndex[token] = *((uint32_t *)(xTokenBuffer + tokenDim));
+#endif
         sourceExpert[token] = expert;
         sourceOffset[token] = expertStart + i;
         sourceGroup[token] = dp;

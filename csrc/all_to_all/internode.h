@@ -7,6 +7,9 @@
 #include "all_to_all/all_to_all.h"
 #include "core/buffer.h"
 
+
+#define FORCE_ZCOPY 1
+
 namespace pplx {
 
 /// @brief All-to-all broadcast kernel.
