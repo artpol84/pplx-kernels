@@ -233,7 +233,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
         uint32_t token = tokenStart + i;
 #if FORCE_ZCOPY
         // Unused in this case
-        sourceIndex[token] = (unsigned)(-1);
+        sourceIndex[token] = i;
 #else
         sourceIndex[token] = *((uint32_t *)(xTokenBuffer + tokenDim));
 #endif
