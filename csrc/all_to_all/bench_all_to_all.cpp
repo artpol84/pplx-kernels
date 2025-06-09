@@ -315,9 +315,10 @@ int main(int argc, char **argv) {
 
   // Set up configurations for benchmarking.
   std::vector<BenchConfig> configs = {
-      {1, 8, 4, 128, 16},
-      {4, 8, 6, 2048, 128},
+       {2, 8, 4, 128, 16},
+       {4, 8, 6, 2048, 128},
   };
+
   for (int numExperts : {8, 16, 64, 256}) {
     for (int numTokens : {1, 4, 16, 64, 128}) {
       configs.push_back({numTokens, numExperts, 8, 7168, 128});
@@ -325,6 +326,11 @@ int main(int argc, char **argv) {
   }
 
   std::shared_ptr<Distributed> distributed = std::make_shared<DistributedNVSHMEM>(rank, worldSize);
+
+#if 0 && !FORCE_ZCOPY
+  // Disabled for now as this hack doesn't support scaling
+  // And focuses on inter-node scenario
+  // TODO: Update to support everything
 
   if (currentPE == 0) {
     std::cout << "Intra-Node FP8" << std::endl;
@@ -346,6 +352,8 @@ int main(int argc, char **argv) {
   benchmark<AllToAllIntraNode, nv_bfloat16, nv_bfloat16, false>(
       configs, 10, currentPE, numPEs, stream, distributed
   );
+
+#endif
 
   if (currentPE == 0) {
     std::cout << "Inter-Node BF16" << std::endl;

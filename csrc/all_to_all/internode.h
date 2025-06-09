@@ -7,6 +7,12 @@
 #include "all_to_all/all_to_all.h"
 #include "core/buffer.h"
 
+
+#define FORCE_ZCOPY 1
+#define DBG_L2 0
+#define DBG_L1 (DBG_L2 + 0)
+
+
 namespace pplx {
 
 /// @brief All-to-all broadcast kernel.
