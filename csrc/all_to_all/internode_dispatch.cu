@@ -125,22 +125,18 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
         if (i % (gridDim.x * dpSize) == (blockIdx.x * dpSize + dpRank)) {
 
 #if FORCE_ZCOPY 
+#if 0
           // Only send token content
           const unsigned out_size = dpXStrideElem;
-#if 0
+
           std::byte *xInPtr = (std::byte *)(dpX + i * dpXStrideElem);
 #else
           // Still Copy the token to the symmetric buffer.
+          const unsigned out_size = tokenStride;
           std::byte *xInPtr = xBufferIn + i * tokenStride;
           const int4 *srcX = (int4 *)(dpX + i * dpXStrideElem);
           for (unsigned d = threadIdx.x; d * sizeof(int4) < hiddenDim; d += numGroupThreads) {
             ((int4 *)xInPtr)[d] = srcX[d];
-          }
-
-          std::byte *xInScalePtr = xInPtr + hiddenDim;
-          const float *srcXScale = dpXScale + i * dpXScaleStrideRow;
-          for (unsigned d = threadIdx.x; d * sizeof(float) < hiddenDimScale; d += numGroupThreads) {
-            ((float *)xInScalePtr)[d] = srcXScale[d * dpXScaleStrideElem];
           }
 #endif
 
@@ -157,6 +153,10 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
           const float *srcXScale = dpXScale + i * dpXScaleStrideRow;
           for (unsigned d = threadIdx.x; d * sizeof(float) < hiddenDimScale; d += numGroupThreads) {
             ((float *)xInScalePtr)[d] = srcXScale[d * dpXScaleStrideElem];
+          }
+
+          if (threadIdx.x == 0) {
+            *((uint32_t *)(xInPtr + tokenDim)) = i;
           }
 #endif
           // Synchronize the warps within this warp group.
