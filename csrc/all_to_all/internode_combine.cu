@@ -79,12 +79,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
 
       const uint32_t dstExpert = rank * numLocalExperts + expert;
 
-#if FORCE_ZCOPY
-      // TODO: Expert uses locally known logical index (seq. number of a token )
-      const uint32_t source = __ldg(&sourceToken[token]);
-#else
       const uint32_t source = __ldg(&sourceIndex[token]);
-#endif
       const uint32_t dp = __ldg(&sourceGroup[token]);
       for (unsigned i = warpId; i < dpSize; i += NUM_WARPS) {
         const int dstRank = dp * dpSize + i;
