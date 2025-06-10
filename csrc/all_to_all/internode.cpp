@@ -44,7 +44,7 @@ AllToAllInterNode::AllToAllInterNode(
   PPLX_ASSERT(numDispatchRecvBuffer != nullptr, "failed to allocate numDispatchRecvBuffer");
   cudaMemset(numDispatchRecvBuffer, 0, sizeof(uint64_t) * numLocalExperts * numDPGroups);
 
-  combineSignalBuffer = (uint64_t *)nvshmem_malloc(sizeof(uint64_t) * maxNumTokens);
+  combineSignalBuffer = (uint64_t *)nvshmem_malloc(sizeof(uint64_t) * maxNumTokens * numDPGroups);
   PPLX_ASSERT(combineSignalBuffer != nullptr, "failed to allocate combineSignalBuffer");
   cudaMemset(combineSignalBuffer, 0, sizeof(uint64_t) * maxNumTokens);
 
