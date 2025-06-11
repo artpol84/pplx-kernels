@@ -172,12 +172,13 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
             const uint32_t group = dstLocalExpert * numDPGroups + dpGroup;
             const unsigned loc = group * maxNumTokens + index;
 
-
+#if 0
             if ( laneId == 0){
               printf ("[%d:%d:%d] DISPATCH: Send token %d to rank=%d, expert=%d, index=%d\n", 
                       rank, blockIdx.x, threadIdx.x,
                       i, dstRank, dstExpert, index);
             }
+#endif
 
             std::byte *destPointer = xBufferOut + loc * tokenStride;
             nvshmemx_putmem_signal_nbi_warp(

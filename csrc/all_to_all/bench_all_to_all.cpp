@@ -316,15 +316,16 @@ int main(int argc, char **argv) {
   // Set up configurations for benchmarking.
   std::vector<BenchConfig> configs = {
       {2, 8, 4, 128, 16},
-  //    {4, 8, 6, 2048, 128},
+      {4, 8, 6, 2048, 128},
+      {8, 8, 8, 7168, 128},
   };
-  /*
+  
   for (int numExperts : {8, 16, 64, 256}) {
     for (int numTokens : {1, 4, 16, 64, 128}) {
       configs.push_back({numTokens, numExperts, 8, 7168, 128});
     }
   }
-  */
+  
 
   std::shared_ptr<Distributed> distributed = std::make_shared<DistributedNVSHMEM>(rank, worldSize);
 
