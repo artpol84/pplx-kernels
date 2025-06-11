@@ -133,21 +133,9 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
         if (i % (gridDim.x * dpSize) == (blockIdx.x * dpSize + dpRank)) {
 
 #if FORCE_ZCOPY 
-#if 1
           // Only send token content
           const unsigned out_size = dpXStrideElem;
-
           std::byte *xInPtr = (std::byte *)(dpX + i * dpXStrideElem);
-#else
-          // Still Copy the token to the symmetric buffer.
-          const unsigned out_size = tokenStride;
-          std::byte *xInPtr = xBufferIn + i * tokenStride;
-          const int4 *srcX = (int4 *)(dpX + i * dpXStrideElem);
-          for (unsigned d = threadIdx.x; d * sizeof(int4) < hiddenDim; d += numGroupThreads) {
-            ((int4 *)xInPtr)[d] = srcX[d];
-          }
-#endif
-
 #else
           // Copy the token to the symmetric buffer.
           const unsigned out_size = tokenStride;
@@ -180,7 +168,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
             const uint32_t group = dstLocalExpert * numDPGroups + dpGroup;
             const unsigned loc = group * maxNumTokens + index;
 
-#if 0
+#if DBG_L2
             if ( laneId == 0){
               printf ("[%d:%d:%d] DISPATCH: Send token %d to rank=%d, expert=%d, index=%d\n", 
                       rank, blockIdx.x, threadIdx.x,
@@ -210,7 +198,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
 
   if constexpr (DO_RECV) {
 
-#if 0
+#if DBG_L1
     if (threadIdx.x == 0 && blockIdx.x ==0) {
       printf ("[%d:%d:%d] DISPATCH: globalTokenIndex = %d, outNumTokensPerExpert[0] = %d\n", 
         rank, blockIdx.x, threadIdx.x, 
@@ -257,15 +245,6 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
 
       for (unsigned i = threadIdx.x; i < numTokens; i += blockDim.x) {
         uint32_t token = tokenStart + i;
-
-// TODO: remove debug
-#if 1
-        if (token >= maxBatchTokens) {
-          printf ("[%d:%d:%d] DISPATCH: group=%d token=%d index=%d access past size\n", 
-            rank, blockIdx.x, threadIdx.x, 
-            group, token, i);
-        }
-#endif
 
 #if FORCE_ZCOPY
         // Unused in this case

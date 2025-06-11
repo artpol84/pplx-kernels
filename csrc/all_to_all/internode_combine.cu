@@ -47,24 +47,11 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
   const unsigned laneId = threadIdx.x % WARP_SIZE;
 
   if (DO_SEND) {
-
-#if 0
-    if (0 == threadIdx.x && blockIdx.x == 0) {
-      printf("\t%d: combine/send Step 1\n", rank);
-    }
-#endif
-
     const size_t numSendTokens = __ldg(&globalTokenIndex);
     for (unsigned i = blockIdx.x * blockDim.x + threadIdx.x; i < worldSize;
          i += gridDim.x * blockDim.x) {
       nvshmemx_signal_op(&combineSyncBuffer[rank], 1, NVSHMEM_SIGNAL_SET, i);
     }
-
-#if 0
-    if (0 == threadIdx.x && blockIdx.x == 0) {
-      printf("\t%d: combine/send Step 2\n", rank);
-    }
-#endif
 
     // Dispatch the tokens from the expert to the DP groups.
     for (uint32_t token = blockIdx.x; token < numSendTokens; token += gridDim.x) {
@@ -105,7 +92,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
 
         sig_addr = &combineSignalBuffer[index];
 
-  #if 1
+  #if DBG_L2
         if ( laneId == 0){
           printf ("COMBINE (rank=%u, lindex=%u, exp=%u, exp_offs=%u, ridx=%u) 0 RETURN [%u:%u:%u]\n", 
                   (unsigned)dstRank,
@@ -122,7 +109,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
 #else
 
         sig_addr = &combineSignalBuffer[source];
-  #if 0
+  #if DBG_L2
         if ( laneId == 0){
           printf ("[%d:%d:%d] COMBINE Return ltoken %d to rank=%d, index=%d (exp_offs=%d, lidx=%d)\n", 
                   rank, blockIdx.x, threadIdx.x,
@@ -136,12 +123,6 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
         );
       }
     }
-
-#if 0
-    if (0 == threadIdx.x && blockIdx.x == 0) {
-      printf("\t%d: combine/send Step 3\n", rank);
-    }
-#endif
   }
 
   // Synchronize the grid to ensure that tokens routed within the rank are
@@ -157,24 +138,11 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
 
     int threadID = blockIdx.x * blockDim.x + threadIdx.x;
 
-#if 0
-    if (0 == threadIdx.x && blockIdx.x == 0) {
-      printf("\t%d: combine/recv Step 1\n", rank);
-    }
-#endif
-
-#if 1
-        if (blockIdx.x == 0 && 0 == threadIdx.x) {
-          printf ("[%d:%d:%d] COMBINE START block0\n", 
-                      rank, blockIdx.x, threadIdx.x);
-        }
-#endif
-
     if (DO_SEND) {
       cooperative_groups::this_grid().sync();
     }
 
-#if 1
+#if DBG_L1
     cooperative_groups::this_grid().sync();
     if (blockIdx.x == 0 && 0 == threadIdx.x) {
       const size_t localNumTokens = boundM ? __ldg(boundM) : m;
@@ -194,7 +162,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
           const uint32_t expert = __ldg(&indices[i * expertsPerToken + k]);
           const unsigned syncIdx = expert * maxNumTokens + tokenIndex[expert];
 
-#if 1
+#if DBG_L2
           printf ("COMBINE (rank=%u, lindex=%u, exp=%u, exp_offs=%u, ridx=%u) 1 WAIT token %u (cur val=%u) [%u:%u:%u]\n", 
                   (unsigned)rank,
                   (unsigned)tokenIndex[expert],
@@ -211,7 +179,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
           nvshmem_uint64_wait_until(&combineSignalBuffer[syncIdx], NVSHMEM_CMP_EQ, 1);
           combineSignalBuffer[syncIdx] = 0;
 
-#if 1
+#if DBG_L2
 
           printf ("COMBINE (rank=%u, lindex=%u, exp=%u, exp_offs=%u, ridx=%u) 1 WAIT token %u [%u:%u:%u] SUCCESS\n", 
                   (unsigned)rank,
@@ -237,7 +205,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
 #endif
 
 
-#if 1
+#if DBG_L1
         if (blockIdx.x == 0 && 0 == threadIdx.x) {
           printf ("[%u:%u:%u] COMBINE Wait SUCCESS\n", 
                   (unsigned)rank,
@@ -277,7 +245,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
           }
         }
 
-#if 1
+#if DBG_L1
         if (blockIdx.x == 0 && 0 == threadIdx.x) {
           printf ("[%u:%u:%u] COMBINE move token SUCCESS\n", 
               (unsigned)rank,
@@ -294,7 +262,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
       if (threadIdx.x < expertsPerToken) {
         uint32_t dstExpert = __ldg(&indices[i * expertsPerToken + threadIdx.x]);
         tokenIndex[dstExpert]++;
-#if 0
+#if DBG_L2
           printf ("[%d:%d:%d] COMBINE token %d, update expert %d local indexes to %d\n", 
                         rank, blockIdx.x, threadIdx.x,
                         i, dstExpert, tokenIndex[dstExpert]);
@@ -305,7 +273,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
 
     }
 
-#if 1
+#if DBG_L1
     if (blockIdx.x == 0 && 0 == threadIdx.x) {
       printf ("[%u:%u:%u] COMBINE RECV done\n", 
         (unsigned)rank,
@@ -320,7 +288,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
       combineSyncBuffer[i] = 0;
     }
 
-#if 1
+#if DBG_L1
     if (blockIdx.x == 0 && 0 == threadIdx.x) {
       printf ("[%u:%u:%u] COMBINE synced\n", 
                   (unsigned)rank,

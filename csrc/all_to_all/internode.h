@@ -9,6 +9,9 @@
 
 
 #define FORCE_ZCOPY 1
+#define DBG_L2 0
+#define DBG_L1 (DBG_L2 + 0)
+
 
 namespace pplx {
 
