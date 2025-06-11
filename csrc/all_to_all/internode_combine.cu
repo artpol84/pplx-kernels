@@ -100,26 +100,36 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
         const unsigned index = dstExpert * maxNumTokens + source;
         std::byte *dstPtr = xBufferOut + index * stride;
         uint64_t *sig_addr = nullptr;
+
 #if FORCE_ZCOPY
 
-#if 0
-        if ( laneId == 0){
-          printf ("[%d:%d:%d] COMBINE Return ltoken %d to rank=%d, index=%d (exp_offs=%d, lidx=%d)\n", 
-                  rank, blockIdx.x, threadIdx.x,
-                  i, dstRank, index, (unsigned)(dstExpert * maxNumTokens), source);
-        }
-#endif
-
         sig_addr = &combineSignalBuffer[index];
+
+  #if 1
+        if ( laneId == 0){
+          printf ("COMBINE (rank=%u, lindex=%u, exp=%u, exp_offs=%u, ridx=%u) 0 RETURN [%u:%u:%u]\n", 
+                  (unsigned)dstRank,
+                  (unsigned)source,
+                  (unsigned)dstExpert,
+                  (unsigned)(dstExpert * maxNumTokens),
+                  (unsigned)index,
+                  (unsigned)rank,
+                  (unsigned)blockIdx.x,
+                  (unsigned)threadIdx.x);
+        }
+  #endif
+
 #else
-#if 0
+
+        sig_addr = &combineSignalBuffer[source];
+  #if 0
         if ( laneId == 0){
           printf ("[%d:%d:%d] COMBINE Return ltoken %d to rank=%d, index=%d (exp_offs=%d, lidx=%d)\n", 
                   rank, blockIdx.x, threadIdx.x,
                   i, dstRank, index, (unsigned)(dstExpert * maxNumTokens), source);
         }
-#endif
-        sig_addr = &combineSignalBuffer[source];
+  #endif
+
 #endif
         nvshmemx_putmem_signal_nbi_warp(
             dstPtr, xTokenPtr, stride, sig_addr, 1, NVSHMEM_SIGNAL_ADD, dstRank
@@ -153,34 +163,30 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
     }
 #endif
 
+#if 1
+        if (blockIdx.x == 0 && 0 == threadIdx.x) {
+          printf ("[%d:%d:%d] COMBINE START block0\n", 
+                      rank, blockIdx.x, threadIdx.x);
+        }
+#endif
+
     if (DO_SEND) {
       cooperative_groups::this_grid().sync();
     }
 
-#if 0
-    if (0 == threadIdx.x && blockIdx.x == 0) {
-      printf("\t%d: combine/recv Step 2\n", rank);
+#if 1
+    cooperative_groups::this_grid().sync();
+    if (blockIdx.x == 0 && 0 == threadIdx.x) {
+      const size_t localNumTokens = boundM ? __ldg(boundM) : m;
+      printf ("[%d:%d:%d] COMBINE START. localNumTokens = %u\n", 
+                  rank, blockIdx.x, threadIdx.x, (unsigned)localNumTokens);
     }
 #endif
 
     // Compute the weighed sum of the input tokens.
     const size_t localNumTokens = boundM ? __ldg(boundM) : m;
     for (unsigned i = 0; i < localNumTokens; i++) {
-
-      // printf ("[%d:%d:%d] COMBINE Check token ltoken %d (expertsPerToken=%d)\n", 
-      //         rank, blockIdx.x, threadIdx.x, i, expertsPerToken);
-      
-      
       if ( (i % gridDim.x) == blockIdx.x) {
-
-        // printf ("[%d:%d:%d] COMBINE Wait for token ltoken %d\n", 
-        //   rank, blockIdx.x, threadIdx.x, i);
-
-#if 0
-        if (0 == threadIdx.x && rank == 0) {
-            printf("\t%d [blk %d]: combine/recv Step 2. token=%d wait for combineSig\n", rank, blockIdx.x, i);
-        }
-#endif
 
 #if FORCE_ZCOPY
         /* Parallel wait for the tokens to arrive */
@@ -188,16 +194,38 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
           const uint32_t expert = __ldg(&indices[i * expertsPerToken + k]);
           const unsigned syncIdx = expert * maxNumTokens + tokenIndex[expert];
 
-#if 0
-          if (1 || rank == 0) {
-              printf ("[%d:%d:%d] COMBINE Wait for token ltoken %d from rank=%d, index=%d (exp_offs=%d, lidx=%d)\n", 
-                      rank, blockIdx.x, threadIdx.x,
-                      i, expert/numLocalExperts, syncIdx, expert * maxNumTokens, tokenIndex[expert]);
-          }
+#if 1
+          printf ("COMBINE (rank=%u, lindex=%u, exp=%u, exp_offs=%u, ridx=%u) 1 WAIT token %u (cur val=%u) [%u:%u:%u]\n", 
+                  (unsigned)rank,
+                  (unsigned)tokenIndex[expert],
+                  (unsigned)expert,
+                  (unsigned)(expert * maxNumTokens),
+                  (unsigned)syncIdx,
+                  (unsigned)i,
+                  (unsigned)combineSignalBuffer[syncIdx],
+                  (unsigned)rank,
+                  (unsigned)blockIdx.x,
+                  (unsigned)threadIdx.x);
 #endif 
 
           nvshmem_uint64_wait_until(&combineSignalBuffer[syncIdx], NVSHMEM_CMP_EQ, 1);
           combineSignalBuffer[syncIdx] = 0;
+
+#if 1
+
+          printf ("COMBINE (rank=%u, lindex=%u, exp=%u, exp_offs=%u, ridx=%u) 1 WAIT token %u [%u:%u:%u] SUCCESS\n", 
+                  (unsigned)rank,
+                  (unsigned)tokenIndex[expert],
+                  (unsigned)expert,
+                  (unsigned)(expert * maxNumTokens),
+                  (unsigned)syncIdx,
+                  (unsigned)i,
+                  (unsigned)rank,
+                  (unsigned)blockIdx.x,
+                  (unsigned)threadIdx.x);
+
+#endif 
+
         }
 #else
         nvshmem_uint64_wait_until(&combineSignalBuffer[i], NVSHMEM_CMP_EQ, expertsPerToken);
@@ -209,9 +237,12 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
 #endif
 
 
-#if 0
-        if (0 == threadIdx.x && rank == 0) {
-          printf("\t%d [blk %d]: combine/recv Step 2. token=%d __syncthreads()\n", rank, blockIdx.x, i);
+#if 1
+        if (blockIdx.x == 0 && 0 == threadIdx.x) {
+          printf ("[%u:%u:%u] COMBINE Wait SUCCESS\n", 
+                  (unsigned)rank,
+                  (unsigned)blockIdx.x,
+                  (unsigned)threadIdx.x);
         }
 #endif
 
@@ -246,6 +277,16 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
           }
         }
 
+#if 1
+        if (blockIdx.x == 0 && 0 == threadIdx.x) {
+          printf ("[%u:%u:%u] COMBINE move token SUCCESS\n", 
+              (unsigned)rank,
+              (unsigned)blockIdx.x,
+              (unsigned)threadIdx.x);
+
+        }
+#endif
+
       }
 
 #if FORCE_ZCOPY
@@ -264,9 +305,12 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
 
     }
 
-#if 0
-    if (0 == threadIdx.x && blockIdx.x == 0) {
-      printf("\t%d: combine/recv Step 3\n", rank);
+#if 1
+    if (blockIdx.x == 0 && 0 == threadIdx.x) {
+      printf ("[%u:%u:%u] COMBINE RECV done\n", 
+        (unsigned)rank,
+        (unsigned)blockIdx.x,
+        (unsigned)threadIdx.x);
     }
 #endif
 
@@ -276,9 +320,12 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
       combineSyncBuffer[i] = 0;
     }
 
-#if 0
-    if (0 == threadIdx.x && blockIdx.x == 0) {
-      printf("\t%d: combine/recv Step 4\n", rank);
+#if 1
+    if (blockIdx.x == 0 && 0 == threadIdx.x) {
+      printf ("[%u:%u:%u] COMBINE synced\n", 
+                  (unsigned)rank,
+                  (unsigned)blockIdx.x,
+                  (unsigned)threadIdx.x);
     }
 #endif
 

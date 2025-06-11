@@ -110,6 +110,14 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
         for (uint32_t i = laneId; i < numLocalExperts; i += WARP_SIZE) {
           outNumTokensPerExpert[i] = 0;
         }
+
+// TODO: temp fix, unneeded when both dispatch and combine are invoked
+#if 1
+        if (laneId == 0) {
+          globalTokenIndex = 0;
+        }
+#endif
+
       }
     } else {
       // Send the tokens to the destination ranks through RDMA.
@@ -201,6 +209,17 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
   }
 
   if constexpr (DO_RECV) {
+
+#if 0
+    if (threadIdx.x == 0 && blockIdx.x ==0) {
+      printf ("[%d:%d:%d] DISPATCH: globalTokenIndex = %d, outNumTokensPerExpert[0] = %d\n", 
+        rank, blockIdx.x, threadIdx.x, 
+        globalTokenIndex, outNumTokensPerExpert[0]);
+    }
+    cooperative_groups::this_grid().sync();
+#endif
+
+
     // Wait for the token counts to be sent.
     const size_t numExpertsAndGroups = numLocalExperts * numDPGroups;
     const size_t expertsPerBlock = ceil_div<size_t>(numExpertsAndGroups, gridDim.x);
@@ -237,12 +256,22 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void dispatchKernel(
       auto tokenStart = sharedToken[group - firstGroup];
 
       for (unsigned i = threadIdx.x; i < numTokens; i += blockDim.x) {
-        std::byte *xTokenBuffer = xBufferOut + (group * maxNumTokens + i) * tokenStride;
         uint32_t token = tokenStart + i;
+
+// TODO: remove debug
+#if 1
+        if (token >= maxBatchTokens) {
+          printf ("[%d:%d:%d] DISPATCH: group=%d token=%d index=%d access past size\n", 
+            rank, blockIdx.x, threadIdx.x, 
+            group, token, i);
+        }
+#endif
+
 #if FORCE_ZCOPY
         // Unused in this case
         sourceIndex[token] = i;
 #else
+        std::byte *xTokenBuffer = xBufferOut + (group * maxNumTokens + i) * tokenStride;
         sourceIndex[token] = *((uint32_t *)(xTokenBuffer + tokenDim));
 #endif
         sourceExpert[token] = expert;
