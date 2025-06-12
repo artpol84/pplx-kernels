@@ -51,11 +51,14 @@ AllToAllInterNode::AllToAllInterNode(
   const size_t signalBufferSize = maxNumTokens;
 #endif
 
+#if DBG_L1
   if (rank == 0) {
     printf("INFO: signalBufferSize = %u, numDPGroups = %u, maxNumTokens = %u, numExperts = %u, numLocalExperts = %u\n",
             (unsigned)signalBufferSize, (unsigned)numDPGroups, (unsigned)maxNumTokens,
             (unsigned)numExperts, (unsigned)numLocalExperts);
   }
+#endif
+
   combineSignalBuffer = (uint64_t *)nvshmem_malloc(sizeof(uint64_t) * signalBufferSize);
   PPLX_ASSERT(combineSignalBuffer != nullptr, "failed to allocate combineSignalBuffer");
   cudaMemset(combineSignalBuffer, 0, sizeof(uint64_t) * signalBufferSize);
