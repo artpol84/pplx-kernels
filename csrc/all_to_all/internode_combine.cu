@@ -44,6 +44,7 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
   const size_t stride = hiddenDim * sizeof(T);
   constexpr unsigned WARP_SIZE = 32;
   uint32_t warpId = threadIdx.x / WARP_SIZE;
+  const unsigned laneId = threadIdx.x % WARP_SIZE;
 
   if (DO_SEND) {
     const size_t numSendTokens = __ldg(&globalTokenIndex);
@@ -85,8 +86,40 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
         const int dstRank = dp * dpSize + i;
         const unsigned index = dstExpert * maxNumTokens + source;
         std::byte *dstPtr = xBufferOut + index * stride;
+        uint64_t *sig_addr = nullptr;
+
+#if FORCE_ZCOPY
+
+        sig_addr = &combineSignalBuffer[index];
+
+  #if DBG_L2
+        if ( laneId == 0){
+          printf ("COMBINE (rank=%u, lindex=%u, exp=%u, exp_offs=%u, ridx=%u) 0 RETURN [%u:%u:%u]\n", 
+                  (unsigned)dstRank,
+                  (unsigned)source,
+                  (unsigned)dstExpert,
+                  (unsigned)(dstExpert * maxNumTokens),
+                  (unsigned)index,
+                  (unsigned)rank,
+                  (unsigned)blockIdx.x,
+                  (unsigned)threadIdx.x);
+        }
+  #endif
+
+#else
+
+        sig_addr = &combineSignalBuffer[source];
+  #if DBG_L2
+        if ( laneId == 0){
+          printf ("[%d:%d:%d] COMBINE Return ltoken %d to rank=%d, index=%d (exp_offs=%d, lidx=%d)\n", 
+                  rank, blockIdx.x, threadIdx.x,
+                  i, dstRank, index, (unsigned)(dstExpert * maxNumTokens), source);
+        }
+  #endif
+
+#endif
         nvshmemx_putmem_signal_nbi_warp(
-            dstPtr, xTokenPtr, stride, &combineSignalBuffer[source], 1, NVSHMEM_SIGNAL_ADD, dstRank
+            dstPtr, xTokenPtr, stride, sig_addr, 1, NVSHMEM_SIGNAL_ADD, dstRank
         );
       }
     }
@@ -95,50 +128,174 @@ __global__ __launch_bounds__(NUM_WARPS * 32, 1) void combineKernel(
   // Synchronize the grid to ensure that tokens routed within the rank are
   // correctly transported from one block to another.
   if (DO_RECV) {
+
+
+    extern __shared__ std::byte sharedMemory[];
+    uint32_t *tokenIndex = reinterpret_cast<uint32_t *>(sharedMemory);
+    for (uint32_t i = threadIdx.x; i < numExperts; i += blockDim.x) {
+      tokenIndex[i] = 0;
+    }
+
+    int threadID = blockIdx.x * blockDim.x + threadIdx.x;
+
     if (DO_SEND) {
       cooperative_groups::this_grid().sync();
     }
 
+#if DBG_L1
+    cooperative_groups::this_grid().sync();
+    if (blockIdx.x == 0 && 0 == threadIdx.x) {
+      const size_t localNumTokens = boundM ? __ldg(boundM) : m;
+      printf ("[%d:%d:%d] COMBINE START. localNumTokens = %u\n", 
+                  rank, blockIdx.x, threadIdx.x, (unsigned)localNumTokens);
+    }
+#endif
+
     // Compute the weighed sum of the input tokens.
     const size_t localNumTokens = boundM ? __ldg(boundM) : m;
-    for (unsigned i = blockIdx.x; i < localNumTokens; i += gridDim.x) {
-      nvshmem_uint64_wait_until(&combineSignalBuffer[i], NVSHMEM_CMP_EQ, expertsPerToken);
-      __syncthreads();
-      combineSignalBuffer[i] = 0;
+    for (unsigned i = 0; i < localNumTokens; i++) {
+      if ( (i % gridDim.x) == blockIdx.x) {
 
-      U *dstPtr = outTokens + i * outTokensStrideElem;
-      constexpr unsigned VEC_SIZE = 8;
-      for (unsigned j = threadIdx.x * VEC_SIZE; j < hiddenDim; j += blockDim.x * VEC_SIZE) {
-        float sum[VEC_SIZE];
-
-#pragma unroll
-        for (unsigned l = 0; l < VEC_SIZE; ++l) {
-          sum[l] = 0.0f;
-        }
-
-        for (unsigned k = 0; k < expertsPerToken; ++k) {
+#if FORCE_ZCOPY
+        /* Parallel wait for the tokens to arrive */
+        for (unsigned k = threadIdx.x; k < expertsPerToken; k += blockDim.x ) {
           const uint32_t expert = __ldg(&indices[i * expertsPerToken + k]);
-          const float weight = __ldg(&weights[i * weightsStrideRow + k]);
+          const unsigned syncIdx = expert * maxNumTokens + tokenIndex[expert];
 
-#pragma unroll
+#if DBG_L2
+          printf ("COMBINE (rank=%u, lindex=%u, exp=%u, exp_offs=%u, ridx=%u) 1 WAIT token %u (cur val=%u) [%u:%u:%u]\n", 
+                  (unsigned)rank,
+                  (unsigned)tokenIndex[expert],
+                  (unsigned)expert,
+                  (unsigned)(expert * maxNumTokens),
+                  (unsigned)syncIdx,
+                  (unsigned)i,
+                  (unsigned)combineSignalBuffer[syncIdx],
+                  (unsigned)rank,
+                  (unsigned)blockIdx.x,
+                  (unsigned)threadIdx.x);
+#endif 
+
+          nvshmem_uint64_wait_until(&combineSignalBuffer[syncIdx], NVSHMEM_CMP_EQ, 1);
+          combineSignalBuffer[syncIdx] = 0;
+
+#if DBG_L2
+
+          printf ("COMBINE (rank=%u, lindex=%u, exp=%u, exp_offs=%u, ridx=%u) 1 WAIT token %u [%u:%u:%u] SUCCESS\n", 
+                  (unsigned)rank,
+                  (unsigned)tokenIndex[expert],
+                  (unsigned)expert,
+                  (unsigned)(expert * maxNumTokens),
+                  (unsigned)syncIdx,
+                  (unsigned)i,
+                  (unsigned)rank,
+                  (unsigned)blockIdx.x,
+                  (unsigned)threadIdx.x);
+
+#endif 
+
+        }
+#else
+        nvshmem_uint64_wait_until(&combineSignalBuffer[i], NVSHMEM_CMP_EQ, expertsPerToken);
+#endif
+        __syncthreads();
+
+#if !FORCE_ZCOPY
+        combineSignalBuffer[i] = 0;
+#endif
+
+
+#if DBG_L1
+        if (blockIdx.x == 0 && 0 == threadIdx.x) {
+          printf ("[%u:%u:%u] COMBINE Wait SUCCESS\n", 
+                  (unsigned)rank,
+                  (unsigned)blockIdx.x,
+                  (unsigned)threadIdx.x);
+        }
+#endif
+
+        U *dstPtr = outTokens + i * outTokensStrideElem;
+        constexpr unsigned VEC_SIZE = 8;
+        for (unsigned j = threadIdx.x * VEC_SIZE; j < hiddenDim; j += blockDim.x * VEC_SIZE) {
+          float sum[VEC_SIZE];
+
+  #pragma unroll
           for (unsigned l = 0; l < VEC_SIZE; ++l) {
-            std::byte *xDstPtr = xBufferOut + (expert * maxNumTokens + i) * stride;
-            sum[l] += weight * (float)((T *)xDstPtr)[j + l];
+            sum[l] = 0.0f;
+          }
+
+          for (unsigned k = 0; k < expertsPerToken; ++k) {
+            const uint32_t expert = __ldg(&indices[i * expertsPerToken + k]);
+            const float weight = __ldg(&weights[i * weightsStrideRow + k]);
+
+  #pragma unroll
+            for (unsigned l = 0; l < VEC_SIZE; ++l) {
+#if FORCE_ZCOPY
+              std::byte *xDstPtr = xBufferOut + (expert * maxNumTokens + tokenIndex[expert]) * stride;
+#else
+              std::byte *xDstPtr = xBufferOut + (expert * maxNumTokens + i) * stride;
+#endif
+              sum[l] += weight * (float)((T *)xDstPtr)[j + l];
+            }
+          }
+
+  #pragma unroll
+          for (unsigned l = 0; l < VEC_SIZE; ++l) {
+            dstPtr[j + l] = sum[l];
           }
         }
 
-#pragma unroll
-        for (unsigned l = 0; l < VEC_SIZE; ++l) {
-          dstPtr[j + l] = sum[l];
+#if DBG_L1
+        if (blockIdx.x == 0 && 0 == threadIdx.x) {
+          printf ("[%u:%u:%u] COMBINE move token SUCCESS\n", 
+              (unsigned)rank,
+              (unsigned)blockIdx.x,
+              (unsigned)threadIdx.x);
+
         }
+#endif
+
       }
+
+#if FORCE_ZCOPY
+      // Replicate the token count calculation across all blocks.
+      if (threadIdx.x < expertsPerToken) {
+        uint32_t dstExpert = __ldg(&indices[i * expertsPerToken + threadIdx.x]);
+        tokenIndex[dstExpert]++;
+#if DBG_L2
+          printf ("[%d:%d:%d] COMBINE token %d, update expert %d local indexes to %d\n", 
+                        rank, blockIdx.x, threadIdx.x,
+                        i, dstExpert, tokenIndex[dstExpert]);
+#endif
+
+      }
+#endif
+
     }
+
+#if DBG_L1
+    if (blockIdx.x == 0 && 0 == threadIdx.x) {
+      printf ("[%u:%u:%u] COMBINE RECV done\n", 
+        (unsigned)rank,
+        (unsigned)blockIdx.x,
+        (unsigned)threadIdx.x);
+    }
+#endif
 
     for (unsigned i = blockIdx.x * blockDim.x + threadIdx.x; i < worldSize;
          i += gridDim.x * blockDim.x) {
       nvshmem_uint64_wait_until(&combineSyncBuffer[i], NVSHMEM_CMP_EQ, 1);
       combineSyncBuffer[i] = 0;
     }
+
+#if DBG_L1
+    if (blockIdx.x == 0 && 0 == threadIdx.x) {
+      printf ("[%u:%u:%u] COMBINE synced\n", 
+                  (unsigned)rank,
+                  (unsigned)blockIdx.x,
+                  (unsigned)threadIdx.x);
+    }
+#endif
 
     if (blockIdx.x == 0 && threadIdx.x == 0) {
       globalTokenIndex = 0;
@@ -168,6 +325,8 @@ void AllToAllInterNode::combine(
 
   dim3 dimGrid(numBlocks, 1, 1);
   dim3 dimBlock(NUM_WARPS * 32, 1, 1);
+
+  const size_t sharedMemoryRecv = sizeof(uint32_t) * numExperts;
 
   void *args[] = {
       const_cast<U **>(&outTokens.data),
@@ -204,17 +363,32 @@ void AllToAllInterNode::combine(
   switch (splitMode) {
   case SplitMode::SEND:
     CUDACHECK(cudaLaunchCooperativeKernel(
-        (void *)&combineKernel<T, U, NUM_WARPS, true, false>, dimGrid, dimBlock, args, 0, stream
+        (void *)&combineKernel<T, U, NUM_WARPS, true, false>,
+        dimGrid,
+        dimBlock,
+        args,
+        0,
+        stream
     ));
     break;
   case SplitMode::RECV:
     CUDACHECK(cudaLaunchCooperativeKernel(
-        (void *)&combineKernel<T, U, NUM_WARPS, false, true>, dimGrid, dimBlock, args, 0, stream
+        (void *)&combineKernel<T, U, NUM_WARPS, false, true>,
+        dimGrid,
+        dimBlock,
+        args,
+        sharedMemoryRecv,
+        stream
     ));
     break;
   case SplitMode::NONE:
     CUDACHECK(cudaLaunchCooperativeKernel(
-        (void *)&combineKernel<T, U, NUM_WARPS, true, true>, dimGrid, dimBlock, args, 0, stream
+        (void *)&combineKernel<T, U, NUM_WARPS, true, true>, 
+        dimGrid,
+        dimBlock, 
+        args,
+        sharedMemoryRecv,
+        stream
     ));
     break;
   default:

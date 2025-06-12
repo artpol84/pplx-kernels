@@ -44,9 +44,24 @@ AllToAllInterNode::AllToAllInterNode(
   PPLX_ASSERT(numDispatchRecvBuffer != nullptr, "failed to allocate numDispatchRecvBuffer");
   cudaMemset(numDispatchRecvBuffer, 0, sizeof(uint64_t) * numLocalExperts * numDPGroups);
 
-  combineSignalBuffer = (uint64_t *)nvshmem_malloc(sizeof(uint64_t) * maxNumTokens);
+
+#if FORCE_ZCOPY
+  const size_t signalBufferSize = numDPGroups * numLocalExperts * maxNumTokens;
+#else
+  const size_t signalBufferSize = maxNumTokens;
+#endif
+
+#if DBG_L1
+  if (rank == 0) {
+    printf("INFO: signalBufferSize = %u, numDPGroups = %u, maxNumTokens = %u, numExperts = %u, numLocalExperts = %u\n",
+            (unsigned)signalBufferSize, (unsigned)numDPGroups, (unsigned)maxNumTokens,
+            (unsigned)numExperts, (unsigned)numLocalExperts);
+  }
+#endif
+
+  combineSignalBuffer = (uint64_t *)nvshmem_malloc(sizeof(uint64_t) * signalBufferSize);
   PPLX_ASSERT(combineSignalBuffer != nullptr, "failed to allocate combineSignalBuffer");
-  cudaMemset(combineSignalBuffer, 0, sizeof(uint64_t) * maxNumTokens);
+  cudaMemset(combineSignalBuffer, 0, sizeof(uint64_t) * signalBufferSize);
 
   combineSyncBuffer = (uint64_t *)nvshmem_malloc(sizeof(uint64_t) * worldSize);
   PPLX_ASSERT(combineSyncBuffer != nullptr, "failed to allocate combineSyncBuffer");
